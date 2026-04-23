@@ -1,0 +1,507 @@
+// ARES — Datenmodell
+// Multi-Tenant via organizationId auf allen tenant-spezifischen Tabellen.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================================================
+// TENANCY
+// ============================================================================
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  plan      Plan     @default(free)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users  User[]
+  brands Brand[]
+
+  @@map("organizations")
+}
+
+enum Plan {
+  free
+  pro
+  business
+}
+
+model User {
+  id             String   @id @default(uuid())
+  organizationId String
+  email          String   @unique
+  passwordHash   String
+  name           String
+  role           UserRole @default(marketing)
+  lastLoginAt    DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization      Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  ownedContents     Content[]      @relation("ContentOwner")
+  reviewedContents  Content[]      @relation("ContentReviewer")
+  contentVersions   ContentVersion[]
+  assignedTasks     Task[]         @relation("TaskAssignee")
+  ownedLeads        Lead[]
+  activities        Activity[]
+
+  @@index([organizationId])
+  @@map("users")
+}
+
+enum UserRole {
+  owner
+  admin
+  marketing
+  sales
+  viewer
+}
+
+// ============================================================================
+// STRATEGY HUB
+// ============================================================================
+
+model Brand {
+  id             String   @id @default(uuid())
+  organizationId String
+  name           String
+
+  // Strategy Hub content
+  vision        String?
+  mission       String?
+  values        String[] @default([])
+  positioning   String?  // 25-Wörter-Pitch, max ~280 chars
+  usp           String[] @default([])
+
+  // Voice
+  toneFormality Int      @default(3) // 1..5
+  toneOpinion   Int      @default(3) // 1..5
+  keyMessages   String[] @default([])
+  noGos         String[] @default([])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  personas        Persona[]
+  competitors     Competitor[]
+  goals           Goal[]
+  campaigns       Campaign[]
+  contents        Content[]
+  leads           Lead[]
+  tasks           Task[]
+  recommendations Recommendation[]
+
+  @@index([organizationId])
+  @@map("brands")
+}
+
+model Persona {
+  id              String   @id @default(uuid())
+  brandId         String
+  name            String
+  roleTitle       String
+  industry        String?
+  painPoints      String[] @default([])
+  buyingMotives   String[] @default([])
+  objections      String[] @default([])
+  isDecisionMaker Boolean  @default(true)
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  brand    Brand     @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  campaigns Campaign[]
+  contents Content[]
+  leads    Lead[]
+
+  @@index([brandId])
+  @@map("personas")
+}
+
+model Competitor {
+  id                 String   @id @default(uuid())
+  brandId            String
+  name               String
+  positioning        String?
+  ourDifferentiation String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
+
+  @@index([brandId])
+  @@map("competitors")
+}
+
+model Goal {
+  id           String     @id @default(uuid())
+  brandId      String
+  category     GoalCat
+  title        String
+  targetValue  Decimal    @db.Decimal(12, 2)
+  currentValue Decimal    @default(0) @db.Decimal(12, 2)
+  unit         String     // "Leads", "€", "Posts"
+  periodStart  DateTime
+  periodEnd    DateTime
+  status       GoalStatus @default(active)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  brand     Brand      @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  campaigns Campaign[]
+
+  @@index([brandId, status])
+  @@map("goals")
+}
+
+enum GoalCat {
+  marketing
+  sales
+}
+
+enum GoalStatus {
+  active
+  done
+  failed
+}
+
+// ============================================================================
+// CAMPAIGNS
+// ============================================================================
+
+model Campaign {
+  id              String         @id @default(uuid())
+  brandId         String
+  name            String
+  goalId          String?
+  targetPersonaId String?
+  channels        String[]       @default([])
+  startDate       DateTime
+  endDate         DateTime
+  status          CampaignStatus @default(draft)
+  brief           String?        // Freitext
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  brand         Brand     @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  goal          Goal?     @relation(fields: [goalId], references: [id], onDelete: SetNull)
+  targetPersona Persona?  @relation(fields: [targetPersonaId], references: [id], onDelete: SetNull)
+  contents      Content[]
+  tasks         Task[]
+
+  @@index([brandId, status])
+  @@map("campaigns")
+}
+
+enum CampaignStatus {
+  draft
+  active
+  paused
+  done
+}
+
+// ============================================================================
+// CONTENT
+// ============================================================================
+
+model Content {
+  id            String        @id @default(uuid())
+  brandId       String
+  campaignId    String?
+  type          ContentType
+  title         String
+  bodyRichText  Json          // Tiptap JSON
+  bodyPlain     String        @default("")
+  meta          Json          @default("{}")
+  personaId     String?
+  channel       String?
+  scheduledAt   DateTime?
+  publishedAt   DateTime?
+  status        ContentStatus @default(idea)
+  ownerId       String
+  reviewerId    String?
+  aiGenerated   Boolean       @default(false)
+  promptPayload Json?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  brand     Brand             @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  campaign  Campaign?         @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  persona   Persona?          @relation(fields: [personaId], references: [id], onDelete: SetNull)
+  owner     User              @relation("ContentOwner", fields: [ownerId], references: [id])
+  reviewer  User?             @relation("ContentReviewer", fields: [reviewerId], references: [id])
+  versions  ContentVersion[]
+  tasks     Task[]
+  touches   LeadContentTouch[]
+
+  @@index([brandId, status])
+  @@index([campaignId])
+  @@map("contents")
+}
+
+enum ContentType {
+  blog
+  landing
+  linkedin_post
+  sales_email
+  followup
+  campaign_brief
+  ad_copy
+}
+
+enum ContentStatus {
+  idea
+  in_progress
+  review
+  approved
+  published
+}
+
+model ContentVersion {
+  id           String   @id @default(uuid())
+  contentId    String
+  bodyRichText Json
+  createdById  String
+  note         String?
+  createdAt    DateTime @default(now())
+
+  content   Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  createdBy User    @relation(fields: [createdById], references: [id])
+
+  @@index([contentId])
+  @@map("content_versions")
+}
+
+// ============================================================================
+// TASKS (Execution Board)
+// ============================================================================
+
+model Task {
+  id                 String       @id @default(uuid())
+  brandId            String
+  title              String
+  description        String?
+  type               TaskType
+  status             TaskStatus   @default(todo)
+  priority           TaskPriority @default(normal)
+  assigneeId         String?
+  dueDate            DateTime?
+  relatedContentId   String?
+  relatedLeadId      String?
+  relatedCampaignId  String?
+  autoGenerated      Boolean      @default(false)
+  generatedReason    String?
+  completedAt        DateTime?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  brand            Brand     @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  assignee         User?     @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  relatedContent   Content?  @relation(fields: [relatedContentId], references: [id], onDelete: SetNull)
+  relatedLead      Lead?     @relation(fields: [relatedLeadId], references: [id], onDelete: SetNull)
+  relatedCampaign  Campaign? @relation(fields: [relatedCampaignId], references: [id], onDelete: SetNull)
+
+  @@index([brandId, status])
+  @@index([assigneeId, status, dueDate])
+  @@map("tasks")
+}
+
+enum TaskType {
+  content_draft
+  content_review
+  content_publish
+  campaign_launch
+  followup
+  custom
+}
+
+enum TaskStatus {
+  todo
+  in_progress
+  blocked
+  done
+}
+
+enum TaskPriority {
+  low
+  normal
+  high
+  urgent
+}
+
+// ============================================================================
+// SALES
+// ============================================================================
+
+model Lead {
+  id                 String     @id @default(uuid())
+  brandId            String
+  firstName          String
+  lastName           String
+  company            String?
+  email              String
+  phone              String?
+  source             LeadSource @default(manual)
+  sourceDetail       String?
+  personaId          String?
+  personaMatchScore  Int?       // 0..100
+  stage              LeadStage  @default(new)
+  score              Int        @default(0)
+  ownerId            String
+  lastActivityAt     DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  brand         Brand              @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  persona       Persona?           @relation(fields: [personaId], references: [id], onDelete: SetNull)
+  owner         User               @relation(fields: [ownerId], references: [id])
+  activities    Activity[]
+  touches       LeadContentTouch[]
+  opportunities Opportunity[]
+  tasks         Task[]
+
+  @@index([brandId, stage])
+  @@map("leads")
+}
+
+enum LeadSource {
+  manual
+  csv_import
+  webhook
+  website_form
+  linkedin
+  referral
+  other
+}
+
+enum LeadStage {
+  new
+  contacted
+  qualified
+  proposal
+  won
+  lost
+}
+
+model Activity {
+  id          String       @id @default(uuid())
+  leadId      String
+  type        ActivityType
+  subject     String?
+  body        String?
+  occurredAt  DateTime     @default(now())
+  createdById String
+  createdAt   DateTime     @default(now())
+
+  lead      Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  createdBy User @relation(fields: [createdById], references: [id])
+
+  @@index([leadId, occurredAt])
+  @@map("activities")
+}
+
+enum ActivityType {
+  call
+  email_out
+  email_in
+  meeting
+  note
+  status_change
+}
+
+model LeadContentTouch {
+  id                   String         @id @default(uuid())
+  leadId               String
+  contentId            String
+  touchType            TouchType      @default(received)
+  markedUsefulBySales  Boolean        @default(false)
+  occurredAt           DateTime       @default(now())
+
+  lead    Lead    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@unique([leadId, contentId, touchType])
+  @@map("lead_content_touches")
+}
+
+enum TouchType {
+  viewed
+  received
+  engaged
+  attributed
+}
+
+model Opportunity {
+  id                    String    @id @default(uuid())
+  leadId                String
+  title                 String
+  amount                Decimal   @db.Decimal(12, 2)
+  probability           Int       @default(50) // 0..100
+  expectedCloseDate     DateTime?
+  stage                 OppStage  @default(qualified)
+  wonAt                 DateTime?
+  attributedContentIds  String[]  @default([])
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId])
+  @@map("opportunities")
+}
+
+enum OppStage {
+  qualified
+  proposal
+  negotiation
+  won
+  lost
+}
+
+// ============================================================================
+// AI COPILOT
+// ============================================================================
+
+model Recommendation {
+  id              String            @id @default(uuid())
+  brandId         String
+  type            RecommendationType
+  title           String
+  reasoning       String
+  ctaTarget       String
+  prefillPayload  Json?
+  priorityScore   Int               @default(50)
+  status          RecStatus         @default(open)
+  createdAt       DateTime          @default(now())
+  actedAt         DateTime?
+
+  brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
+
+  @@index([brandId, status, priorityScore])
+  @@map("recommendations")
+}
+
+enum RecommendationType {
+  content_gap
+  followup_needed
+  campaign_idea
+  task_overdue
+  hot_lead
+}
+
+enum RecStatus {
+  open
+  accepted
+  dismissed
+  expired
+}
